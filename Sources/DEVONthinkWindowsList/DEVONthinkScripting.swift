@@ -1,0 +1,220 @@
+import AppKit
+
+enum DEVONthinkScriptError: LocalizedError {
+    case notInstalled
+    case notRunning
+    case scriptFailed(message: String, number: Int)
+    case malformedOutput
+
+    var errorDescription: String? {
+        switch self {
+        case .notInstalled:
+            return "没有找到 DEVONthink，请先安装 DEVONthink 4（或 3）。"
+        case .notRunning:
+            return "DEVONthink 当前没有运行。"
+        case .scriptFailed(let message, _):
+            return message
+        case .malformedOutput:
+            return "无法解析 DEVONthink 返回的窗口信息。"
+        }
+    }
+
+    /// Apple Event error codes used by macOS when automation is not allowed.
+    var isPermissionIssue: Bool {
+        if case .scriptFailed(_, let number) = self {
+            return number == -1743 || number == -1744
+        }
+        return false
+    }
+}
+
+/// Talks to DEVONthink through AppleScript.
+/// Every Apple Event is sent on a private serial queue so the UI never blocks on
+/// DEVONthink (or on the system automation permission prompt).
+final class DEVONthinkScripting {
+    static let shared = DEVONthinkScripting()
+
+    private let queue = DispatchQueue(label: "com.jkhnfk.DEVONthinkWindowsList.applescript", qos: .userInitiated)
+
+    private init() {}
+
+    // MARK: - Public API
+
+    func fetchWindows(completion: @escaping (Result<[DTWindowInfo], Error>) -> Void) {
+        guard DEVONthinkApp.installed else {
+            completion(.failure(DEVONthinkScriptError.notInstalled))
+            return
+        }
+        guard DEVONthinkApp.isRunning else {
+            completion(.failure(DEVONthinkScriptError.notRunning))
+            return
+        }
+        guard let bundleIdentifier = DEVONthinkApp.bundleIdentifier else {
+            completion(.failure(DEVONthinkScriptError.notInstalled))
+            return
+        }
+
+        let source = Self.fetchScriptTemplate.replacingOccurrences(of: "<<BUNDLE_ID>>", with: bundleIdentifier)
+        execute(source) { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let output):
+                completion(Self.parse(output))
+            }
+        }
+    }
+
+    /// Brings the given window to the front and activates DEVONthink.
+    func activate(_ window: DTWindowInfo, completion: ((Error?) -> Void)? = nil) {
+        guard let bundleIdentifier = DEVONthinkApp.bundleIdentifier else {
+            completion?(DEVONthinkScriptError.notInstalled)
+            return
+        }
+
+        let source = Self.activationScriptTemplate
+            .replacingOccurrences(of: "<<BUNDLE_ID>>", with: bundleIdentifier)
+            .replacingOccurrences(of: "<<WINDOW_ID>>", with: String(window.windowID))
+
+        execute(source) { result in
+            switch result {
+            case .success:
+                completion?(nil)
+            case .failure(let error):
+                completion?(error)
+            }
+        }
+    }
+
+    /// Opens the Automation pane of System Settings so the user can grant consent.
+    func openAutomationSettings() {
+        let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - AppleScript execution
+
+    private func execute(_ source: String, completion: @escaping (Result<String, Error>) -> Void) {
+        queue.async {
+            guard let script = NSAppleScript(source: source) else {
+                completion(.failure(DEVONthinkScriptError.scriptFailed(message: "无法创建 AppleScript。", number: 0)))
+                return
+            }
+
+            var errorInfo: NSDictionary?
+            let descriptor = script.executeAndReturnError(&errorInfo)
+
+            if let errorInfo {
+                let number = (errorInfo[NSAppleScript.errorNumber] as? NSNumber)?.intValue ?? 0
+                let message = (errorInfo[NSAppleScript.errorMessage] as? String)
+                    ?? (errorInfo[NSAppleScript.errorBriefMessage] as? String)
+                    ?? "与 DEVONthink 通信失败。"
+                completion(.failure(DEVONthinkScriptError.scriptFailed(message: message, number: number)))
+            } else {
+                completion(.success(descriptor.stringValue ?? ""))
+            }
+        }
+    }
+
+    // MARK: - Parsing
+
+    /// Records are separated by U+0002 and fields by U+0001 to avoid problems
+    /// with document titles that contain commas, quotes or newlines.
+    private static func parse(_ output: String) -> Result<[DTWindowInfo], Error> {
+        var windows: [DTWindowInfo] = []
+
+        for record in output.components(separatedBy: "\u{02}") where !record.isEmpty {
+            let fields = record.components(separatedBy: "\u{01}")
+            guard fields.count >= 5,
+                  let kind = DTWindowInfo.Kind(rawValue: fields[0]),
+                  let windowID = Int(fields[1]) else {
+                continue
+            }
+
+            windows.append(
+                DTWindowInfo(
+                    kind: kind,
+                    windowID: windowID,
+                    title: fields[2],
+                    databaseName: fields[4],
+                    isMiniaturized: fields[3] == "true"
+                )
+            )
+        }
+
+        return .success(windows)
+    }
+
+    // MARK: - Script sources
+
+    private static let fetchScriptTemplate = #"""
+    with timeout of 10 seconds
+        tell application id "<<BUNDLE_ID>>"
+            set fld to ASCII character 1
+            set rec to ASCII character 2
+            set outText to ""
+            repeat with w in main windows
+                try
+                    set winName to ""
+                    try
+                        set winName to name of w
+                    end try
+                    set dbName to ""
+                    try
+                        set dbName to name of database of w
+                    end try
+                    set isMini to false
+                    try
+                        if miniaturized of w then set isMini to true
+                    end try
+                    set outText to outText & "main" & fld & (id of w as text) & fld & winName & fld & (isMini as text) & fld & dbName & rec
+                end try
+            end repeat
+            repeat with w in document windows
+                try
+                    set winName to ""
+                    try
+                        set winName to name of w
+                    end try
+                    set dbName to ""
+                    try
+                        set dbName to name of database of w
+                    end try
+                    set isMini to false
+                    try
+                        if miniaturized of w then set isMini to true
+                    end try
+                    set outText to outText & "document" & fld & (id of w as text) & fld & winName & fld & (isMini as text) & fld & dbName & rec
+                end try
+            end repeat
+            return outText
+        end tell
+    end timeout
+    """#
+
+    private static let activationScriptTemplate = #"""
+    with timeout of 10 seconds
+        tell application id "<<BUNDLE_ID>>"
+            set targetWindow to missing value
+            repeat with w in windows
+                try
+                    if (id of w) is <<WINDOW_ID>> then
+                        set targetWindow to w
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if targetWindow is missing value then
+                error "找不到该窗口，它可能已经被关闭。" number 1728
+            end if
+            try
+                if miniaturized of targetWindow then set miniaturized of targetWindow to false
+            end try
+            set index of targetWindow to 1
+            activate
+        end tell
+    end timeout
+    """#
+}
