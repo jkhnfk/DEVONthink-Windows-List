@@ -4,12 +4,14 @@ import AppKit
 final class WindowRowView: NSView {
     let windowInfo: DTWindowInfo
     var onClick: (() -> Void)?
+    var onClose: (() -> Void)?
 
     private let highlightView = HighlightView()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let chevronView = NSImageView()
+    private let closeButton = ClosureButton.icon("xmark", toolTip: "关闭")
     private var trackingArea: NSTrackingArea?
 
     private var isHovered = false {
@@ -68,13 +70,23 @@ final class WindowRowView: NSView {
         chevronView.alphaValue = 0
         addSubview(chevronView)
 
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.contentTintColor = .secondaryLabelColor
+        closeButton.alphaValue = 0
+        closeButton.onClick { [weak self] in
+            self?.onClose?()
+        }
+        addSubview(closeButton)
+
+        let indent: CGFloat = windowInfo.kind == .tab ? 24 : 8
+
         NSLayoutConstraint.activate([
             highlightView.leadingAnchor.constraint(equalTo: leadingAnchor),
             highlightView.trailingAnchor.constraint(equalTo: trailingAnchor),
             highlightView.topAnchor.constraint(equalTo: topAnchor, constant: 0.5),
             highlightView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -0.5),
 
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 16),
             iconView.heightAnchor.constraint(equalToConstant: 16),
@@ -83,9 +95,14 @@ final class WindowRowView: NSView {
             chevronView.centerYAnchor.constraint(equalTo: centerYAnchor),
             chevronView.widthAnchor.constraint(equalToConstant: 7),
             chevronView.heightAnchor.constraint(equalToConstant: 11),
+            
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 20),
+            closeButton.heightAnchor.constraint(equalToConstant: 20),
 
             titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 7),
-            titleLabel.trailingAnchor.constraint(equalTo: chevronView.leadingAnchor, constant: -8),
+            titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 4),
 
             subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
@@ -136,7 +153,11 @@ final class WindowRowView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        isPressed = true
+        // Only consider pressed if not clicking the close button
+        let point = convert(event.locationInWindow, from: nil)
+        if !closeButton.frame.contains(point) {
+            isPressed = true
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -148,6 +169,11 @@ final class WindowRowView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if closeButton.frame.contains(point) && isHovered {
+            // Close button handles its own click via onClick
+            return
+        }
+        
         let shouldActivate = isPressed && bounds.contains(point)
         isPressed = false
         if shouldActivate {
@@ -166,7 +192,9 @@ final class WindowRowView: NSView {
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
-            chevronView.animator().alphaValue = isHovered ? 1 : 0
+            // Hide chevron, show close button on hover
+            chevronView.animator().alphaValue = 0 
+            closeButton.animator().alphaValue = isHovered ? 1 : 0
         }
     }
 }

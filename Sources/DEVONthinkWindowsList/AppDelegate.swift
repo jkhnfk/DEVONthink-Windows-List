@@ -60,6 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         content.onSelectWindow = { [weak self] window in
             self?.activate(window)
         }
+        content.onCloseWindow = { [weak self] window in
+            self?.close(window)
+        }
         content.onLaunchDEVONthink = { [weak self] in
             DEVONthinkApp.open()
             self?.scheduleRefresh(after: 2)
@@ -238,6 +241,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.present(error: error)
                 }
                 self.scheduleRefresh(after: 0.8)
+            }
+        }
+    }
+
+    private func close(_ window: DTWindowInfo) {
+        DEVONthinkScripting.shared.close(window) { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let error {
+                    self.present(error: error)
+                }
+                self.scheduleRefresh(after: 0.5)
             }
         }
     }

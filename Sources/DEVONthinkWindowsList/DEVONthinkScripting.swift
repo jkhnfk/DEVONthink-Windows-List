@@ -65,16 +65,49 @@ final class DEVONthinkScripting {
         }
     }
 
-    /// Brings the given window to the front and activates DEVONthink.
+    /// Brings the given window (or tab) to the front and activates DEVONthink.
     func activate(_ window: DTWindowInfo, completion: ((Error?) -> Void)? = nil) {
         guard let bundleIdentifier = DEVONthinkApp.bundleIdentifier else {
             completion?(DEVONthinkScriptError.notInstalled)
             return
         }
 
-        let source = Self.activationScriptTemplate
+        var source = Self.activationScriptTemplate
             .replacingOccurrences(of: "<<BUNDLE_ID>>", with: bundleIdentifier)
             .replacingOccurrences(of: "<<WINDOW_ID>>", with: String(window.windowID))
+            
+        if let tabID = window.tabID {
+            source = source.replacingOccurrences(of: "<<TAB_ACTIVATION>>", with: "set current tab of targetWindow to tab id \(tabID) of targetWindow")
+        } else {
+            source = source.replacingOccurrences(of: "<<TAB_ACTIVATION>>", with: "")
+        }
+
+        execute(source) { result in
+            switch result {
+            case .success:
+                completion?(nil)
+            case .failure(let error):
+                completion?(error)
+            }
+        }
+    }
+
+    /// Closes the given window (or tab).
+    func close(_ window: DTWindowInfo, completion: ((Error?) -> Void)? = nil) {
+        guard let bundleIdentifier = DEVONthinkApp.bundleIdentifier else {
+            completion?(DEVONthinkScriptError.notInstalled)
+            return
+        }
+
+        var source = Self.closeScriptTemplate
+            .replacingOccurrences(of: "<<BUNDLE_ID>>", with: bundleIdentifier)
+            .replacingOccurrences(of: "<<WINDOW_ID>>", with: String(window.windowID))
+            
+        if let tabID = window.tabID {
+            source = source.replacingOccurrences(of: "<<TARGET>>", with: "tab id \(tabID) of targetWindow")
+        } else {
+            source = source.replacingOccurrences(of: "<<TARGET>>", with: "targetWindow")
+        }
 
         execute(source) { result in
             switch result {
@@ -127,16 +160,19 @@ final class DEVONthinkScripting {
 
         for record in output.components(separatedBy: "\u{02}") where !record.isEmpty {
             let fields = record.components(separatedBy: "\u{01}")
-            guard fields.count >= 5,
+            guard fields.count >= 6,
                   let kind = DTWindowInfo.Kind(rawValue: fields[0]),
                   let windowID = Int(fields[1]) else {
                 continue
             }
 
+            let tabID = Int(fields[5])
+
             windows.append(
                 DTWindowInfo(
                     kind: kind,
                     windowID: windowID,
+                    tabID: tabID,
                     title: fields[2],
                     databaseName: fields[4],
                     isMiniaturized: fields[3] == "true"
@@ -155,6 +191,7 @@ final class DEVONthinkScripting {
             set fld to ASCII character 1
             set rec to ASCII character 2
             set outText to ""
+            
             repeat with w in main windows
                 try
                     set winName to ""
@@ -169,9 +206,43 @@ final class DEVONthinkScripting {
                     try
                         if miniaturized of w then set isMini to true
                     end try
-                    set outText to outText & "main" & fld & (id of w as text) & fld & winName & fld & (isMini as text) & fld & dbName & rec
+                    set wID to id of w as text
+                    set outText to outText & "main" & fld & wID & fld & winName & fld & (isMini as text) & fld & dbName & fld & "" & rec
+                    
+                    try
+                        set tbs to tabs of w
+                        if (count of tbs) > 1 then
+                            set curID to id of current tab of w
+                            repeat with t in tbs
+                                set tabNumID to id of t
+                                if tabNumID is not equal to curID then
+                                    set tID to tabNumID as text
+                                    set tName to winName
+                                    set tDbName to dbName
+                                    try
+                                        set rURL to reference URL of t
+                                        if rURL is not missing value then
+                                            set u1 to (characters 21 thru -1 of (rURL as string)) as string
+                                            set AppleScript's text item delimiters to "?"
+                                            set u to text item 1 of u1
+                                            set AppleScript's text item delimiters to ""
+                                            set recd to get record with uuid u
+                                            if recd is not missing value then
+                                                set tName to name of recd
+                                                try
+                                                    set tDbName to name of database of recd
+                                                end try
+                                            end if
+                                        end if
+                                    end try
+                                    set outText to outText & "tab" & fld & wID & fld & tName & fld & "false" & fld & tDbName & fld & tID & rec
+                                end if
+                            end repeat
+                        end if
+                    end try
                 end try
             end repeat
+            
             repeat with w in document windows
                 try
                     set winName to ""
@@ -186,9 +257,43 @@ final class DEVONthinkScripting {
                     try
                         if miniaturized of w then set isMini to true
                     end try
-                    set outText to outText & "document" & fld & (id of w as text) & fld & winName & fld & (isMini as text) & fld & dbName & rec
+                    set wID to id of w as text
+                    set outText to outText & "document" & fld & wID & fld & winName & fld & (isMini as text) & fld & dbName & fld & "" & rec
+                    
+                    try
+                        set tbs to tabs of w
+                        if (count of tbs) > 1 then
+                            set curID to id of current tab of w
+                            repeat with t in tbs
+                                set tabNumID to id of t
+                                if tabNumID is not equal to curID then
+                                    set tID to tabNumID as text
+                                    set tName to winName
+                                    set tDbName to dbName
+                                    try
+                                        set rURL to reference URL of t
+                                        if rURL is not missing value then
+                                            set u1 to (characters 21 thru -1 of (rURL as string)) as string
+                                            set AppleScript's text item delimiters to "?"
+                                            set u to text item 1 of u1
+                                            set AppleScript's text item delimiters to ""
+                                            set recd to get record with uuid u
+                                            if recd is not missing value then
+                                                set tName to name of recd
+                                                try
+                                                    set tDbName to name of database of recd
+                                                end try
+                                            end if
+                                        end if
+                                    end try
+                                    set outText to outText & "tab" & fld & wID & fld & tName & fld & "false" & fld & tDbName & fld & tID & rec
+                                end if
+                            end repeat
+                        end if
+                    end try
                 end try
             end repeat
+            
             return outText
         end tell
     end timeout
@@ -212,8 +317,33 @@ final class DEVONthinkScripting {
             try
                 if miniaturized of targetWindow then set miniaturized of targetWindow to false
             end try
+            try
+                <<TAB_ACTIVATION>>
+            end try
             set index of targetWindow to 1
             activate
+        end tell
+    end timeout
+    """#
+
+    private static let closeScriptTemplate = #"""
+    with timeout of 10 seconds
+        tell application id "<<BUNDLE_ID>>"
+            set targetWindow to missing value
+            repeat with w in windows
+                try
+                    if (id of w) is <<WINDOW_ID>> then
+                        set targetWindow to w
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if targetWindow is missing value then
+                return ""
+            end if
+            try
+                close <<TARGET>>
+            end try
         end tell
     end timeout
     """#

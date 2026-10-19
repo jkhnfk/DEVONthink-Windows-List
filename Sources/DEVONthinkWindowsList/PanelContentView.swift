@@ -8,6 +8,7 @@ import AppKit
 final class PanelContentView: NSView {
     var onRefresh: (() -> Void)?
     var onSelectWindow: ((DTWindowInfo) -> Void)?
+    var onCloseWindow: ((DTWindowInfo) -> Void)?
     var onLaunchDEVONthink: (() -> Void)?
     var onOpenAutomationSettings: (() -> Void)?
     var onShowSettingsMenu: ((NSButton) -> Void)?
@@ -273,9 +274,12 @@ final class PanelContentView: NSView {
             )
 
         case .ready(let windows):
-            countLabel.stringValue = windows.isEmpty ? "" : "\(windows.count)"
             let mainWindows = windows.filter { $0.kind == .main }
             let documentWindows = windows.filter { $0.kind == .document }
+            let tabs = windows.filter { $0.kind == .tab }
+
+            let totalWindows = mainWindows.count + documentWindows.count
+            countLabel.stringValue = totalWindows == 0 ? "" : "\(totalWindows)"
 
             if windows.isEmpty {
                 addEmptyState(
@@ -286,11 +290,17 @@ final class PanelContentView: NSView {
             } else {
                 if !mainWindows.isEmpty {
                     addSectionHeader(title: "主窗口", count: mainWindows.count)
-                    mainWindows.forEach(addRow)
+                    for window in mainWindows {
+                        addRow(window)
+                        tabs.filter { $0.windowID == window.windowID }.forEach(addRow)
+                    }
                 }
                 if !documentWindows.isEmpty {
                     addSectionHeader(title: "文档窗口", count: documentWindows.count)
-                    documentWindows.forEach(addRow)
+                    for window in documentWindows {
+                        addRow(window)
+                        tabs.filter { $0.windowID == window.windowID }.forEach(addRow)
+                    }
                 }
             }
 
@@ -367,6 +377,9 @@ final class PanelContentView: NSView {
         let row = WindowRowView(window: window)
         row.onClick = { [weak self] in
             self?.onSelectWindow?(window)
+        }
+        row.onClose = { [weak self] in
+            self?.onCloseWindow?(window)
         }
         listView.addItem(row, height: 34)
     }
