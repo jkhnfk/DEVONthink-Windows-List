@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import ServiceManagement
+import DEVONthinkWindowsListCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let settings = Settings.shared
@@ -110,14 +111,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         needsRefresh = false
         panelController.contentView.update(state: currentState, isRefreshing: true, lastRefresh: lastRefreshDate)
 
-        DEVONthinkScripting.shared.fetchWindows { [weak self] result in
+        fetchAllWindows { [weak self] state in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isRefreshing = false
-                self.currentState = Self.panelState(for: result)
+                self.currentState = state
                 self.lastRefreshDate = Date()
                 self.panelController.contentView.update(
-                    state: self.currentState,
+                    state: state,
                     isRefreshing: false,
                     lastRefresh: self.lastRefreshDate
                 )
@@ -126,6 +127,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if self.needsRefresh {
                     self.needsRefresh = false
                     self.scheduleRefresh(after: 0.25)
+                }
+            }
+        }
+    }
+
+    /// Fetches DEVONthink's windows and, when the setting is on, Skim's too.
+    /// A DEVONthink failure maps to the usual error states; a Skim failure
+    /// degrades gracefully to DEVONthink-only (permission issues are surfaced).
+    private func fetchAllWindows(completion: @escaping (PanelState) -> Void) {
+        DEVONthinkScripting.shared.fetchWindows { [weak self] dtResult in
+            guard let self else { return }
+            switch dtResult {
+            case .failure:
+                completion(Self.panelState(for: dtResult))
+            case .success(let dtWindows):
+                guard self.settings.showSkim, SkimApp.isRunning else {
+                    completion(.ready(dtWindows))
+                    return
+                }
+                SkimScripting.shared.fetchWindows { [weak self] skimResult in
+                    guard let self else { return }
+                    switch skimResult {
+                    case .success(let skimWindows):
+                        completion(.ready(dtWindows + skimWindows))
+                    case .failure(let error):
+                        // Safe degradation: keep DEVONthink rows. Surface an
+                        // automation-permission refusal instead of swallowing it.
+                        if let scriptError = error as? DEVONthinkScriptError, scriptError.isPermissionIssue {
+                            DispatchQueue.main.async {
+                                self.present(error: error)
+                            }
+                        }
+                        completion(.ready(dtWindows))
+                    }
                 }
             }
         }
@@ -192,13 +227,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// stable for the lifetime of a window, so a changed signature means that
     /// windows were opened, closed or recreated.
     private func windowSignature() -> String? {
-        guard let pid = DEVONthinkApp.runningApplication?.processIdentifier else { return nil }
+        var pids: [Int32] = []
+        if let pid = DEVONthinkApp.runningApplication?.processIdentifier {
+            pids.append(pid)
+        }
+        if settings.showSkim, let pid = SkimApp.runningApplication?.processIdentifier {
+            pids.append(pid)
+        }
+        guard !pids.isEmpty else { return nil }
+        let pidSet = Set(pids)
         let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
         let ids = list.compactMap { info -> Int? in
-            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid else { return nil }
+            guard let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  pidSet.contains(ownerPID) else { return nil }
             guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return nil }
             return (info[kCGWindowNumber as String] as? NSNumber)?.intValue
         }
@@ -234,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func activate(_ window: DTWindowInfo) {
         panelController.hideImmediately()
-        DEVONthinkScripting.shared.activate(window) { [weak self] error in
+        let completion: (Error?) -> Void = { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let error {
@@ -243,10 +287,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.scheduleRefresh(after: 0.8)
             }
         }
+        switch window.app {
+        case .devonthink:
+            DEVONthinkScripting.shared.activate(window, completion: completion)
+        case .skim:
+            SkimScripting.shared.activate(window, completion: completion)
+        }
     }
 
     private func close(_ window: DTWindowInfo) {
-        DEVONthinkScripting.shared.close(window) { [weak self] error in
+        let completion: (Error?) -> Void = { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let error {
@@ -254,6 +304,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 self.scheduleRefresh(after: 0.5)
             }
+        }
+        switch window.app {
+        case .devonthink:
+            DEVONthinkScripting.shared.close(window, completion: completion)
+        case .skim:
+            SkimScripting.shared.close(window, completion: completion)
         }
     }
 
@@ -366,6 +422,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoHideItem.state = settings.autoHide ? .on : .off
         menu.addItem(autoHideItem)
 
+        let showSkimItem = NSMenuItem(title: "显示 Skim 窗口", action: #selector(toggleShowSkim), keyEquivalent: "")
+        showSkimItem.target = self
+        showSkimItem.state = settings.showSkim ? .on : .off
+        showSkimItem.isEnabled = SkimApp.installed
+        menu.addItem(showSkimItem)
+
         let edgeMenu = NSMenu()
         for edge in DockEdge.allCases {
             let item = NSMenuItem(title: edge.localizedName, action: #selector(selectEdge(_:)), keyEquivalent: "")
@@ -400,6 +462,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoHideItem.target = self
         autoHideItem.state = settings.autoHide ? .on : .off
         menu.addItem(autoHideItem)
+
+        let showSkimItem = NSMenuItem(title: "显示 Skim 窗口", action: #selector(toggleShowSkim), keyEquivalent: "")
+        showSkimItem.target = self
+        showSkimItem.state = settings.showSkim ? .on : .off
+        showSkimItem.isEnabled = SkimApp.installed
+        menu.addItem(showSkimItem)
 
         let edgeMenu = NSMenu()
         for edge in DockEdge.allCases {
@@ -458,6 +526,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAutoHide() {
         settings.autoHide.toggle()
+    }
+
+    @objc private func toggleShowSkim() {
+        settings.showSkim.toggle()
+        refresh()
     }
 
     @objc private func selectEdge(_ sender: NSMenuItem) {

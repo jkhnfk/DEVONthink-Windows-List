@@ -17,6 +17,7 @@ final class Settings {
     private enum Key {
         static let edge = "panelEdge"
         static let autoHide = "autoHide"
+        static let showSkim = "showSkim"
     }
 
     private let defaults = UserDefaults.standard
@@ -24,7 +25,8 @@ final class Settings {
     private init() {
         defaults.register(defaults: [
             Key.edge: DockEdge.right.rawValue,
-            Key.autoHide: true
+            Key.autoHide: true,
+            Key.showSkim: false
         ])
     }
 
@@ -45,6 +47,16 @@ final class Settings {
         set {
             guard newValue != autoHide else { return }
             defaults.set(newValue, forKey: Key.autoHide)
+            notifyChange()
+        }
+    }
+
+    /// `true`: also list Skim's open PDF windows/tabs alongside DEVONthink's.
+    var showSkim: Bool {
+        get { defaults.bool(forKey: Key.showSkim) }
+        set {
+            guard newValue != showSkim else { return }
+            defaults.set(newValue, forKey: Key.showSkim)
             notifyChange()
         }
     }

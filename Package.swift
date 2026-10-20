@@ -7,9 +7,19 @@ let package = Package(
         .macOS(.v13)
     ],
     targets: [
+        .target(
+            name: "DEVONthinkWindowsListCore",
+            path: "Sources/DEVONthinkWindowsListCore"
+        ),
         .executableTarget(
             name: "DEVONthinkWindowsList",
+            dependencies: ["DEVONthinkWindowsListCore"],
             path: "Sources/DEVONthinkWindowsList"
+        ),
+        .testTarget(
+            name: "DEVONthinkWindowsListTests",
+            dependencies: ["DEVONthinkWindowsListCore"],
+            path: "Tests/DEVONthinkWindowsListTests"
         )
     ]
 )

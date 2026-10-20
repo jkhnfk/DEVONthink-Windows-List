@@ -1,4 +1,5 @@
 import AppKit
+import DEVONthinkWindowsListCore
 
 /// The content of the side panel: header, scrollable window list and footer.
 ///
@@ -274,11 +275,13 @@ final class PanelContentView: NSView {
             )
 
         case .ready(let windows):
-            let mainWindows = windows.filter { $0.kind == .main }
-            let documentWindows = windows.filter { $0.kind == .document }
-            let tabs = windows.filter { $0.kind == .tab }
+            let dtWindows = windows.filter { $0.app == .devonthink }
+            let skimWindows = windows.filter { $0.app == .skim }
+            let mainWindows = dtWindows.filter { $0.kind == .main }
+            let documentWindows = dtWindows.filter { $0.kind == .document }
+            let tabs = dtWindows.filter { $0.kind == .tab }
 
-            let totalWindows = mainWindows.count + documentWindows.count
+            let totalWindows = mainWindows.count + documentWindows.count + skimWindows.count
             countLabel.stringValue = totalWindows == 0 ? "" : "\(totalWindows)"
 
             if windows.isEmpty {
@@ -301,6 +304,10 @@ final class PanelContentView: NSView {
                         addRow(window)
                         tabs.filter { $0.windowID == window.windowID }.forEach(addRow)
                     }
+                }
+                if !skimWindows.isEmpty {
+                    addSectionHeader(title: "Skim", count: skimWindows.count)
+                    skimWindows.forEach(addRow)
                 }
             }
 

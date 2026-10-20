@@ -1,4 +1,5 @@
 import AppKit
+import DEVONthinkWindowsListCore
 
 enum DEVONthinkScriptError: LocalizedError {
     case notInstalled
@@ -60,7 +61,12 @@ final class DEVONthinkScripting {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let output):
-                completion(Self.parse(output))
+                let parsed = WindowParser.parseDetailed(output, app: .devonthink)
+                if parsed.allInvalid {
+                    completion(.failure(DEVONthinkScriptError.malformedOutput))
+                } else {
+                    completion(.success(parsed.windows))
+                }
             }
         }
     }
@@ -149,38 +155,6 @@ final class DEVONthinkScripting {
                 completion(.success(descriptor.stringValue ?? ""))
             }
         }
-    }
-
-    // MARK: - Parsing
-
-    /// Records are separated by U+0002 and fields by U+0001 to avoid problems
-    /// with document titles that contain commas, quotes or newlines.
-    private static func parse(_ output: String) -> Result<[DTWindowInfo], Error> {
-        var windows: [DTWindowInfo] = []
-
-        for record in output.components(separatedBy: "\u{02}") where !record.isEmpty {
-            let fields = record.components(separatedBy: "\u{01}")
-            guard fields.count >= 6,
-                  let kind = DTWindowInfo.Kind(rawValue: fields[0]),
-                  let windowID = Int(fields[1]) else {
-                continue
-            }
-
-            let tabID = Int(fields[5])
-
-            windows.append(
-                DTWindowInfo(
-                    kind: kind,
-                    windowID: windowID,
-                    tabID: tabID,
-                    title: fields[2],
-                    databaseName: fields[4],
-                    isMiniaturized: fields[3] == "true"
-                )
-            )
-        }
-
-        return .success(windows)
     }
 
     // MARK: - Script sources

@@ -1,4 +1,5 @@
 import AppKit
+import DEVONthinkWindowsListCore
 
 /// One clickable DEVONthink window entry.
 final class WindowRowView: NSView {
